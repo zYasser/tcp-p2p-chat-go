@@ -1,7 +1,6 @@
 package transport
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -81,21 +80,7 @@ func handleConnection(conn net.Conn) {
 
 }
 
-func write(conn net.Conn, parts ...[]byte) error {
-	total := 0
-	for _, p := range parts {
-		total += len(p)
-	}
-
-	packet := make([]byte, 4+total)
-	binary.BigEndian.PutUint32(packet[:4], uint32(total))
-
-	offset := 4
-	for _, p := range parts {
-		copy(packet[offset:], p)
-		offset += len(p)
-	}
-
+func write(conn net.Conn, packet []byte) error {
 	return writeAll(conn, packet)
 }
 
