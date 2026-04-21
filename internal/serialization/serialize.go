@@ -7,7 +7,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/zYasser/tcp-p2p-chat-go.git/pkg/errors"
+	protocolError "github.com/zYasser/tcp-p2p-chat-go.git/internal/errors"
 )
 
 func Serialize(conn net.Conn) (*map[string]interface{}, error) {
@@ -15,7 +15,7 @@ func Serialize(conn net.Conn) (*map[string]interface{}, error) {
 	line, err := reader.ReadString('\n')
 	if err != nil {
 		log.Printf("Read error: %v", err)
-		return nil, errors.SerializationError
+		return nil, protocolError.SerializationError
 	}
 	line = strings.ReplaceAll(line, "\r\n", "")
 
@@ -23,7 +23,7 @@ func Serialize(conn net.Conn) (*map[string]interface{}, error) {
 	err = json.Unmarshal([]byte(strings.TrimSpace(line)), &msg)
 	if err != nil {
 		log.Printf("JSON parse error: %v", err)
-		return nil, errors.SerializationError
+		return nil, protocolError.SerializationError
 	}
 	return &msg, nil
 

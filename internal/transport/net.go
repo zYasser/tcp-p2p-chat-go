@@ -8,7 +8,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/zYasser/tcp-p2p-chat-go.git/pkg/serialization"
+	"github.com/zYasser/tcp-p2p-chat-go.git/internal/serialization"
 )
 
 type Server struct {
