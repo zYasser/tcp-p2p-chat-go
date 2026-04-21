@@ -9,8 +9,20 @@ const (
 	MESSAGE
 )
 
-type Message struct {
-	Type    MessageType
+type Status byte
+
+const (
+	StatusOK Status = iota
+	StatusError
+)
+
+type Response struct {
 	Headers map[string]string
-	Body    []byte
+	Status  Status
+}
+
+type Message struct {
+	Response
+	Type MessageType
+	Body []byte
 }

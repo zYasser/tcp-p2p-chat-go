@@ -9,9 +9,6 @@ import (
 	"time"
 )
 
-// --- helpers ---
-
-// encodeOrFail encodes a message and fails the test on error.
 func encodeOrFail(t *testing.T, m Message) []byte {
 	t.Helper()
 	b, err := Encode(m)
@@ -21,12 +18,10 @@ func encodeOrFail(t *testing.T, m Message) []byte {
 	return b
 }
 
-// pipeConn returns two connected net.Conn using net.Pipe.
 func pipeConn() (net.Conn, net.Conn) {
 	return net.Pipe()
 }
 
-// writeAndDecode writes raw bytes to one end of a pipe and decodes from the other.
 func writeAndDecode(t *testing.T, raw []byte) (*Message, error) {
 	t.Helper()
 	server, client := pipeConn()
@@ -42,10 +37,8 @@ func writeAndDecode(t *testing.T, raw []byte) (*Message, error) {
 	return Decode(client)
 }
 
-// --- Encode tests ---
-
 func TestEncode_FrameLength(t *testing.T) {
-	m := Message{Type: 1, Headers: map[string]string{"k": "v"}, Body: []byte("hello")}
+	m := Message{Response: Response{Headers: map[string]string{"k": "v"}, Status: StatusOK}, Type: 1, Body: []byte("hello")}
 	packet := encodeOrFail(t, m)
 
 	declared := binary.BigEndian.Uint32(packet[:4])
@@ -55,7 +48,7 @@ func TestEncode_FrameLength(t *testing.T) {
 }
 
 func TestEncode_TypeField(t *testing.T) {
-	m := Message{Type: 42, Headers: map[string]string{}, Body: nil}
+	m := Message{Response: Response{Headers: map[string]string{}}, Type: 42, Body: nil}
 	packet := encodeOrFail(t, m)
 
 	gotType := binary.BigEndian.Uint16(packet[4:6])
@@ -64,8 +57,17 @@ func TestEncode_TypeField(t *testing.T) {
 	}
 }
 
+func TestEncode_StatusField(t *testing.T) {
+	m := Message{Response: Response{Headers: map[string]string{}, Status: StatusError}, Type: 1, Body: nil}
+	packet := encodeOrFail(t, m)
+
+	if gotStatus := Status(packet[6]); gotStatus != StatusError {
+		t.Errorf("status field: got %d, want %d", gotStatus, StatusError)
+	}
+}
+
 func TestEncode_NilHeaders(t *testing.T) {
-	m := Message{Type: 1, Headers: nil, Body: []byte("body")}
+	m := Message{Response: Response{Headers: nil}, Type: 1, Body: []byte("body")}
 	_, err := Encode(m)
 	if err != nil {
 		t.Errorf("Encode() with nil headers should not error, got: %v", err)
@@ -73,7 +75,7 @@ func TestEncode_NilHeaders(t *testing.T) {
 }
 
 func TestEncode_NilBody(t *testing.T) {
-	m := Message{Type: 1, Headers: map[string]string{"a": "b"}, Body: nil}
+	m := Message{Response: Response{Headers: map[string]string{"a": "b"}}, Type: 1, Body: nil}
 	_, err := Encode(m)
 	if err != nil {
 		t.Errorf("Encode() with nil body should not error, got: %v", err)
@@ -81,7 +83,7 @@ func TestEncode_NilBody(t *testing.T) {
 }
 
 func TestEncode_EmptyMessage(t *testing.T) {
-	m := Message{Type: 0, Headers: map[string]string{}, Body: []byte{}}
+	m := Message{Response: Response{Headers: map[string]string{}}, Type: 0, Body: []byte{}}
 	_, err := Encode(m)
 	if err != nil {
 		t.Errorf("Encode() with empty message should not error, got: %v", err)
@@ -90,7 +92,7 @@ func TestEncode_EmptyMessage(t *testing.T) {
 
 func TestEncode_LargeBody(t *testing.T) {
 	body := bytes.Repeat([]byte("x"), 1<<16)
-	m := Message{Type: 7, Headers: map[string]string{}, Body: body}
+	m := Message{Response: Response{Headers: map[string]string{}}, Type: 7, Body: body}
 	packet := encodeOrFail(t, m)
 
 	declared := int(binary.BigEndian.Uint32(packet[:4]))
@@ -101,18 +103,15 @@ func TestEncode_LargeBody(t *testing.T) {
 
 func TestEncode_MultipleHeaders(t *testing.T) {
 	m := Message{
-		Type:    3,
-		Headers: map[string]string{"content-type": "application/json", "x-request-id": "abc123", "auth": "bearer xyz"},
-		Body:    []byte(`{"key":"value"}`),
+		Response: Response{Headers: map[string]string{"content-type": "application/json", "x-request-id": "abc123", "auth": "bearer xyz"}, Status: StatusOK},
+		Type:     3,
+		Body:     []byte(`{"key":"value"}`),
 	}
-	// Should encode and round-trip cleanly (validated in roundtrip tests)
 	_, err := Encode(m)
 	if err != nil {
 		t.Errorf("Encode() unexpected error: %v", err)
 	}
 }
-
-// --- extractType tests ---
 
 func TestExtractType_Valid(t *testing.T) {
 	b := []byte{0x00, 0x05, 0xFF, 0xFF}
@@ -153,7 +152,25 @@ func TestExtractType_MaxValue(t *testing.T) {
 	}
 }
 
-// --- extractHeaders tests ---
+func TestExtractStatus_Valid(t *testing.T) {
+	status, rest, err := extractStatus([]byte{byte(StatusError), 0xFF})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != StatusError {
+		t.Errorf("got status %d, want %d", status, StatusError)
+	}
+	if !bytes.Equal(rest, []byte{0xFF}) {
+		t.Errorf("rest not advanced correctly: %v", rest)
+	}
+}
+
+func TestExtractStatus_Empty(t *testing.T) {
+	_, _, err := extractStatus([]byte{})
+	if err == nil {
+		t.Error("expected error for empty status field")
+	}
+}
 
 func TestExtractHeaders_Valid(t *testing.T) {
 	jsonBytes := []byte(`{"foo":"bar"}`)
@@ -183,7 +200,7 @@ func TestExtractHeaders_TooShortForLengthField(t *testing.T) {
 
 func TestExtractHeaders_LengthFieldExceedsBuffer(t *testing.T) {
 	buf := make([]byte, 4)
-	binary.BigEndian.PutUint32(buf, 999) // claims 999 bytes of headers
+	binary.BigEndian.PutUint32(buf, 999)
 	_, _, err := extractHeaders(buf)
 	if err == nil {
 		t.Error("expected error when header length exceeds buffer size")
@@ -220,8 +237,6 @@ func TestExtractHeaders_EmptyHeaders(t *testing.T) {
 	}
 }
 
-// --- Round-trip tests (Encode -> Decode) ---
-
 func roundTrip(t *testing.T, m Message) *Message {
 	t.Helper()
 	packet := encodeOrFail(t, m)
@@ -245,9 +260,9 @@ func roundTrip(t *testing.T, m Message) *Message {
 
 func TestRoundTrip_Basic(t *testing.T) {
 	m := Message{
-		Type:    1,
-		Headers: map[string]string{"key": "value"},
-		Body:    []byte("hello world"),
+		Response: Response{Headers: map[string]string{"key": "value"}, Status: StatusOK},
+		Type:     1,
+		Body:     []byte("hello world"),
 	}
 	got := roundTrip(t, m)
 
@@ -257,13 +272,16 @@ func TestRoundTrip_Basic(t *testing.T) {
 	if !reflect.DeepEqual(got.Headers, m.Headers) {
 		t.Errorf("Headers: got %v, want %v", got.Headers, m.Headers)
 	}
+	if got.Status != m.Status {
+		t.Errorf("Status: got %d, want %d", got.Status, m.Status)
+	}
 	if !bytes.Equal(got.Body, m.Body) {
 		t.Errorf("Body: got %q, want %q", got.Body, m.Body)
 	}
 }
 
 func TestRoundTrip_EmptyBody(t *testing.T) {
-	m := Message{Type: 2, Headers: map[string]string{"x": "y"}, Body: []byte{}}
+	m := Message{Response: Response{Headers: map[string]string{"x": "y"}}, Type: 2, Body: []byte{}}
 	got := roundTrip(t, m)
 	if !bytes.Equal(got.Body, []byte{}) && got.Body != nil {
 		t.Errorf("Body: got %v, want empty", got.Body)
@@ -271,8 +289,11 @@ func TestRoundTrip_EmptyBody(t *testing.T) {
 }
 
 func TestRoundTrip_EmptyHeaders(t *testing.T) {
-	m := Message{Type: 3, Headers: map[string]string{}, Body: []byte("data")}
+	m := Message{Response: Response{Headers: map[string]string{}, Status: StatusError}, Type: 3, Body: []byte("data")}
 	got := roundTrip(t, m)
+	if got.Status != m.Status {
+		t.Errorf("Status: got %d, want %d", got.Status, m.Status)
+	}
 	if !bytes.Equal(got.Body, m.Body) {
 		t.Errorf("Body: got %q, want %q", got.Body, m.Body)
 	}
@@ -280,7 +301,7 @@ func TestRoundTrip_EmptyHeaders(t *testing.T) {
 
 func TestRoundTrip_BinaryBody(t *testing.T) {
 	body := []byte{0x00, 0x01, 0x02, 0xFF, 0xFE, 0xFD}
-	m := Message{Type: 9, Headers: map[string]string{}, Body: body}
+	m := Message{Response: Response{Headers: map[string]string{}}, Type: 9, Body: body}
 	got := roundTrip(t, m)
 	if !bytes.Equal(got.Body, body) {
 		t.Errorf("Body: got %v, want %v", got.Body, body)
@@ -289,22 +310,25 @@ func TestRoundTrip_BinaryBody(t *testing.T) {
 
 func TestRoundTrip_MultipleHeaders(t *testing.T) {
 	m := Message{
-		Type: 4,
-		Headers: map[string]string{
+		Response: Response{Headers: map[string]string{
 			"content-type":  "application/json",
 			"authorization": "Bearer token123",
 			"x-request-id":  "req-abc",
-		},
+		}, Status: StatusOK},
+		Type: 4,
 		Body: []byte(`{"status":"ok"}`),
 	}
 	got := roundTrip(t, m)
 	if !reflect.DeepEqual(got.Headers, m.Headers) {
 		t.Errorf("Headers: got %v, want %v", got.Headers, m.Headers)
 	}
+	if got.Status != m.Status {
+		t.Errorf("Status: got %d, want %d", got.Status, m.Status)
+	}
 }
 
 func TestRoundTrip_ZeroType(t *testing.T) {
-	m := Message{Type: 0, Headers: map[string]string{}, Body: []byte("zero")}
+	m := Message{Response: Response{Headers: map[string]string{}}, Type: 0, Body: []byte("zero")}
 	got := roundTrip(t, m)
 	if got.Type != 0 {
 		t.Errorf("Type: got %d, want 0", got.Type)
@@ -312,7 +336,7 @@ func TestRoundTrip_ZeroType(t *testing.T) {
 }
 
 func TestRoundTrip_MaxType(t *testing.T) {
-	m := Message{Type: 0xFFFF, Headers: map[string]string{}, Body: []byte("max")}
+	m := Message{Response: Response{Headers: map[string]string{}}, Type: 0xFFFF, Body: []byte("max")}
 	got := roundTrip(t, m)
 	if got.Type != 0xFFFF {
 		t.Errorf("Type: got %d, want 65535", got.Type)
@@ -320,19 +344,17 @@ func TestRoundTrip_MaxType(t *testing.T) {
 }
 
 func TestRoundTrip_LargeBody(t *testing.T) {
-	body := bytes.Repeat([]byte("ab"), 1<<15) // 64KB
-	m := Message{Type: 5, Headers: map[string]string{"size": "large"}, Body: body}
+	body := bytes.Repeat([]byte("ab"), 1<<15)
+	m := Message{Response: Response{Headers: map[string]string{"size": "large"}}, Type: 5, Body: body}
 	got := roundTrip(t, m)
 	if !bytes.Equal(got.Body, body) {
 		t.Errorf("large body mismatch (lengths: got %d, want %d)", len(got.Body), len(body))
 	}
 }
 
-// --- Decode error tests ---
-
 func TestDecode_EmptyStream(t *testing.T) {
 	server, client := pipeConn()
-	server.Close() // immediate EOF
+	server.Close()
 	defer client.Close()
 
 	client.SetDeadline(time.Now().Add(time.Second))
@@ -343,7 +365,6 @@ func TestDecode_EmptyStream(t *testing.T) {
 }
 
 func TestDecode_TruncatedAfterLengthField(t *testing.T) {
-	// Write a length of 100 but send no payload
 	raw := make([]byte, 4)
 	binary.BigEndian.PutUint32(raw, 100)
 	_, err := writeAndDecode(t, raw)
@@ -353,7 +374,6 @@ func TestDecode_TruncatedAfterLengthField(t *testing.T) {
 }
 
 func TestDecode_PacketTooShortForTypeField(t *testing.T) {
-	// 1 byte payload — too short for 2-byte type
 	inner := []byte{0x01}
 	raw := make([]byte, 4+len(inner))
 	binary.BigEndian.PutUint32(raw[:4], uint32(len(inner)))
@@ -365,9 +385,20 @@ func TestDecode_PacketTooShortForTypeField(t *testing.T) {
 	}
 }
 
+func TestDecode_PacketTooShortForStatusField(t *testing.T) {
+	inner := []byte{0x00, 0x01}
+	raw := make([]byte, 4+len(inner))
+	binary.BigEndian.PutUint32(raw[:4], uint32(len(inner)))
+	copy(raw[4:], inner)
+
+	_, err := writeAndDecode(t, raw)
+	if err == nil {
+		t.Error("expected error for payload too short for status field")
+	}
+}
+
 func TestDecode_PacketTooShortForHeaderLengthField(t *testing.T) {
-	// 2 bytes: enough for type, but not for the 4-byte header-length field
-	inner := []byte{0x00, 0x01, 0x00}
+	inner := []byte{0x00, 0x01, byte(StatusOK)}
 	raw := make([]byte, 4+len(inner))
 	binary.BigEndian.PutUint32(raw[:4], uint32(len(inner)))
 	copy(raw[4:], inner)
@@ -380,11 +411,11 @@ func TestDecode_PacketTooShortForHeaderLengthField(t *testing.T) {
 
 func TestDecode_InvalidHeaderJSON(t *testing.T) {
 	badJSON := []byte(`{invalid}`)
-	// type(2) + headerLen(4) + badJSON
-	inner := make([]byte, 2+4+len(badJSON))
+	inner := make([]byte, 2+1+4+len(badJSON))
 	binary.BigEndian.PutUint16(inner[0:2], 1)
-	binary.BigEndian.PutUint32(inner[2:6], uint32(len(badJSON)))
-	copy(inner[6:], badJSON)
+	inner[2] = byte(StatusOK)
+	binary.BigEndian.PutUint32(inner[3:7], uint32(len(badJSON)))
+	copy(inner[7:], badJSON)
 
 	raw := make([]byte, 4+len(inner))
 	binary.BigEndian.PutUint32(raw[:4], uint32(len(inner)))
