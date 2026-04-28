@@ -13,8 +13,9 @@ func Encode(m Message) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal headers: %w", err)
 	}
+	errorBytes := []byte(m.Error)
 
-	totalBytes := 2 + 1 + 4 + len(headers) + len(m.Body)
+	totalBytes := 2 + 1 + 4 + len(headers) + 4 + len(errorBytes) + len(m.Body)
 	packet := make([]byte, 4+totalBytes)
 
 	binary.BigEndian.PutUint32(packet[0:4], uint32(totalBytes))
@@ -22,7 +23,10 @@ func Encode(m Message) ([]byte, error) {
 	packet[6] = byte(m.Status)
 	binary.BigEndian.PutUint32(packet[7:11], uint32(len(headers)))
 	copy(packet[11:], headers)
-	copy(packet[11+len(headers):], m.Body)
+	errorLenOffset := 11 + len(headers)
+	binary.BigEndian.PutUint32(packet[errorLenOffset:errorLenOffset+4], uint32(len(errorBytes)))
+	copy(packet[errorLenOffset+4:errorLenOffset+4+len(errorBytes)], errorBytes)
+	copy(packet[errorLenOffset+4+len(errorBytes):], m.Body)
 
 	return packet, nil
 }
@@ -30,7 +34,7 @@ func Encode(m Message) ([]byte, error) {
 func Decode(conn net.Conn) (*Message, error) {
 	payload, err := readPacket(conn)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read packet: %w", err)
+		return nil, fmt.Errorf("decode: failed to read packet: %w", err)
 	}
 
 	mType, rest, err := extractType(payload)
@@ -43,7 +47,12 @@ func Decode(conn net.Conn) (*Message, error) {
 		return nil, err
 	}
 
-	headers, body, err := extractHeaders(rest)
+	headers, rest, err := extractHeaders(rest)
+	if err != nil {
+		return nil, err
+	}
+
+	errorMessage, body, err := extractError(rest)
 	if err != nil {
 		return nil, err
 	}
@@ -52,39 +61,51 @@ func Decode(conn net.Conn) (*Message, error) {
 		Response: Response{
 			Headers: headers,
 			Status:  status,
+			Error:   errorMessage,
 		},
-		Type:     mType,
-		Body:     body,
+		Type: mType,
+		Body: body,
 	}, nil
 }
 
 func extractType(b []byte) (MessageType, []byte, error) {
 	if len(b) < 2 {
-		return 0, nil, fmt.Errorf("payload too short for type field: got %d bytes", len(b))
+		return 0, nil, fmt.Errorf("extract type: payload too short for type field: got %d bytes", len(b))
 	}
 	return MessageType(binary.BigEndian.Uint16(b[:2])), b[2:], nil
 }
 
 func extractStatus(b []byte) (Status, []byte, error) {
 	if len(b) < 1 {
-		return 0, nil, fmt.Errorf("payload too short for status field: got %d bytes", len(b))
+		return 0, nil, fmt.Errorf("extract status: payload too short for status field: got %d bytes", len(b))
 	}
 	return Status(b[0]), b[1:], nil
 }
 
 func extractHeaders(b []byte) (map[string]string, []byte, error) {
 	if len(b) < 4 {
-		return nil, nil, fmt.Errorf("payload too short for header length field: got %d bytes", len(b))
+		return nil, nil, fmt.Errorf("extract headers: payload too short for header length field: got %d bytes", len(b))
 	}
 	headerLength := binary.BigEndian.Uint32(b[:4])
 	if uint32(len(b)) < 4+headerLength {
-		return nil, nil, fmt.Errorf("payload too short for headers: need %d bytes, got %d", 4+headerLength, len(b))
+		return nil, nil, fmt.Errorf("extract headers: payload too short for headers: need %d bytes, got %d", 4+headerLength, len(b))
 	}
 	var headers map[string]string
 	if err := json.Unmarshal(b[4:4+headerLength], &headers); err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal headers (length=%d): %w", headerLength, err)
+		return nil, nil, fmt.Errorf("extract headers: failed to unmarshal headers (length=%d): %w", headerLength, err)
 	}
 	return headers, b[4+headerLength:], nil
+}
+
+func extractError(b []byte) (string, []byte, error) {
+	if len(b) < 4 {
+		return "", nil, fmt.Errorf("extract error: payload too short for error length field: got %d bytes", len(b))
+	}
+	errorLength := binary.BigEndian.Uint32(b[:4])
+	if uint32(len(b)) < 4+errorLength {
+		return "", nil, fmt.Errorf("extract error: payload too short for error body: need %d bytes, got %d", 4+errorLength, len(b))
+	}
+	return string(b[4 : 4+errorLength]), b[4+errorLength:], nil
 }
 
 func readPacket(conn net.Conn) ([]byte, error) {

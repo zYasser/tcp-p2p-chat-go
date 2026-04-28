@@ -7,6 +7,7 @@ const (
 	SYNC
 	KILL
 	MESSAGE
+	PONG
 )
 
 type Status byte
@@ -19,6 +20,7 @@ const (
 type Response struct {
 	Headers map[string]string
 	Status  Status
+	Error   string
 }
 
 type Message struct {

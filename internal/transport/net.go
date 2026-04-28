@@ -1,24 +1,22 @@
 package transport
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net"
-	"time"
 
-	"github.com/zYasser/tcp-p2p-chat-go.git/internal/serialization"
+	"github.com/zYasser/tcp-p2p-chat-go.git/internal/handler"
 )
 
 type Server struct {
-	lp      *net.Listener
-	port    int
-	address string
+	listener net.Listener
+	port     int
+	address  string
+	Ready    chan struct{}
 }
 
 func InitiateServer() *Server {
-
 	address := flag.String("address", "localhost", "server address")
 	port := flag.Int("port", 0, "server port")
 	flag.Parse()
@@ -26,71 +24,55 @@ func InitiateServer() *Server {
 	return &Server{
 		address: *address,
 		port:    *port,
+		Ready:   make(chan struct{}),
 	}
 }
 
 func InitiateServerWithArgs(address string, port int) *Server {
-
 	return &Server{
 		address: address,
 		port:    port,
+		Ready:   make(chan struct{}),
 	}
 }
 
-func (s *Server) Start() {
+func (s *Server) Start() error {
 	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.address, s.port))
 	if err != nil {
-		log.Fatal("Error listening:", err)
+		return fmt.Errorf("listen failed: %w", err)
 	}
+
+	s.listener = listener
+
 	if s.port == 0 {
 		s.port = listener.Addr().(*net.TCPAddr).Port
 	}
-	defer listener.Close()
 
-	log.Printf("Server Initialize it at %s:%d", s.address, s.port)
+	log.Printf("Server initialized at %s:%d", s.address, s.port)
+	close(s.Ready)
 
-	s.lp = &listener
 	for {
-
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Println("Error accepting conn:", err)
-			continue
+			return fmt.Errorf("accept failed: %w", err)
 		}
 
 		go handleConnection(conn)
 	}
-
-}
-func handleConnection(conn net.Conn) {
-
-	defer conn.Close()
-	start := time.Now()
-	defer func() {
-		log.Printf("This connection took %v ms", time.Since(start).Milliseconds())
-	}()
-	msg, err := serialization.Serialize(conn)
-	if err != nil {
-		fmt.Printf("Failed To process the task %v", err)
-		return
-	}
-
-	response, _ := json.Marshal(msg)
-	write(conn, response)
-
 }
 
-func write(conn net.Conn, packet []byte) error {
-	return writeAll(conn, packet)
-}
-
-func writeAll(conn net.Conn, data []byte) error {
-	for len(data) > 0 {
-		n, err := conn.Write(data)
-		if err != nil {
-			return err
-		}
-		data = data[n:]
+func (s *Server) Stop() error {
+	if s.listener != nil {
+		return s.listener.Close()
 	}
 	return nil
+}
+
+func handleConnection(conn net.Conn) {
+	defer conn.Close()
+
+	result := handler.HandleMessage(conn)
+	if err := writeAll(conn, result); err != nil {
+		log.Println("write failed:", err)
+	}
 }

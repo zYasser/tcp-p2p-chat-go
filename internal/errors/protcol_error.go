@@ -1,5 +1,7 @@
-package protocolError
+package errors
 
 import "errors"
 
-var SerializationError = errors.New("Failed To Serialize")
+var SerializationReadError = errors.New("failed to read incoming payload")
+var SerializationError = errors.New("failed to serialize")
+var FailedToConnect =errors.New("Failed To Connect")
