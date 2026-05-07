@@ -8,6 +8,7 @@ const (
 	KILL
 	MESSAGE
 	PONG
+	ERROR
 )
 
 type Status byte
