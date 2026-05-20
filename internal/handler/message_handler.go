@@ -7,6 +7,13 @@ import (
 	"github.com/zYasser/tcp-p2p-chat-go.git/internal/protocol"
 )
 
+type JoinMsg struct {
+	ID      string
+	Port    int
+	Address string
+	Name    string
+}
+
 func HandleMessage(conn net.Conn) []byte {
 	msg, err := protocol.Decode(conn)
 	if err != nil {

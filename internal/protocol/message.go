@@ -9,6 +9,7 @@ const (
 	MESSAGE
 	PONG
 	ERROR
+	ACK
 )
 
 type Status byte

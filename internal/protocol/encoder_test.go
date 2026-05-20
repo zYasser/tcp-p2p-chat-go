@@ -116,13 +116,57 @@ func TestEncode_LargeBody(t *testing.T) {
 func TestEncode_MultipleHeaders(t *testing.T) {
 	m := Message{
 		Response: Response{Headers: map[string]string{"content-type": "application/json", "x-request-id": "abc123", "auth": "bearer xyz"}, Status: StatusOK},
-		Type:     3,
+		Type:     PING,
 		Body:     []byte(`{"key":"value"}`),
 	}
-	_, err := Encode(m)
+	body, err := Encode(m)
 	if err != nil {
 		t.Errorf("Encode() unexpected error: %v", err)
 	}
+	server, client := pipeConn()
+	defer server.Close()
+	defer client.Close()
+
+	go func() {
+		server.Write(body)
+		server.Close()
+	}()
+
+	client.SetDeadline(time.Now().Add(time.Second))
+	msg, err := Decode(client)
+	if err != nil {
+		t.Errorf("Encode() unexpected error: %v", err)
+
+	}
+	expectedHeaders := map[string]string{
+		"content-type": "application/json",
+		"x-request-id": "abc123",
+		"auth":         "bearer xyz",
+	}
+
+	for key, expected := range expectedHeaders {
+		value, ok := msg.Response.Headers[key]
+
+		if !ok || value != expected {
+			t.Errorf("expected header %s=%s, got %s", key, expected, value)
+		}
+	}
+	// validate type
+	if msg.Type != PING {
+		t.Errorf("expected type %v, got %v", PING, msg.Type)
+	}
+
+	// validate status
+	if msg.Response.Status != StatusOK {
+		t.Errorf("expected status %v, got %v", StatusOK, msg.Response.Status)
+	}
+
+	// validate body
+	expectedBody := `{"key":"value"}`
+	if string(msg.Body) != expectedBody {
+		t.Errorf("expected body %s, got %s", expectedBody, string(msg.Body))
+	}
+
 }
 
 func TestExtractType_Valid(t *testing.T) {
